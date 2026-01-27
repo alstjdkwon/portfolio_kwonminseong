@@ -32,6 +32,7 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [pdfDocument, setPdfDocument] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
   const [pageInput, setPageInput] = useState("1");
+  const [thumbnails, setThumbnails] = useState<{ [key: number]: string }>({});
 
   // PDF 로드
   useEffect(() => {
@@ -42,6 +43,9 @@ export default function Home() {
         setPdfDocument(pdf);
         setTotalPages(pdf.numPages);
         console.log("PDF 로드 완료:", pdf.numPages, "페이지");
+        
+        // 썸네일 생성
+        generateThumbnails(pdf);
       } catch (error) {
         console.error("PDF 로드 실패:", error);
       } finally {
@@ -50,6 +54,37 @@ export default function Home() {
     };
     loadPdf();
   }, []);
+
+  // 썸네일 생성
+  const generateThumbnails = async (pdf: pdfjsLib.PDFDocumentProxy) => {
+    const thumbs: { [key: number]: string } = {};
+    
+    for (let i = 1; i <= Math.min(pdf.numPages, 28); i++) {
+      try {
+        const page = await pdf.getPage(i);
+        const viewport = page.getViewport({ scale: 0.2 }); // 작은 크기로 생성
+        
+        const canvas = document.createElement("canvas");
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        
+        const ctx = canvas.getContext("2d");
+        if (!ctx) continue;
+        
+        const renderContext: any = {
+          canvasContext: ctx,
+          viewport: viewport,
+        };
+        
+        await page.render(renderContext).promise;
+        thumbs[i] = canvas.toDataURL("image/png");
+      } catch (error) {
+        console.error(`썸네일 생성 실패 (페이지 ${i}):`, error);
+      }
+    }
+    
+    setThumbnails(thumbs);
+  };
 
   // 페이지 렌더링
   useEffect(() => {
@@ -233,22 +268,36 @@ export default function Home() {
           sidebarOpen ? "w-48" : "w-0"
         } bg-[#1a1a1a] border-r border-[#404040] overflow-hidden flex flex-col`}
       >
-        <div className="flex-1 overflow-y-auto p-3 space-y-2">
+        <div className="flex-1 overflow-y-auto p-3 space-y-3">
           {Array.from({ length: totalPages }, (_, i) => i + 1).map((page) => (
             <div
               key={page}
               onClick={() => handleThumbnailClick(page)}
               className={`
-                cursor-pointer rounded border-2 transition-all duration-200
+                cursor-pointer rounded transition-all duration-200 flex flex-col items-center gap-2
                 ${
                   currentPage === page
-                    ? "border-[#4a9eff] bg-[#404040]"
-                    : "border-[#404040] bg-[#2d2d2d] hover:border-[#505050]"
+                    ? "ring-2 ring-[#4a9eff]"
+                    : "hover:opacity-80"
                 }
-                aspect-video flex items-center justify-center text-sm font-medium
               `}
             >
-              <span className="text-center">{page}</span>
+              {/* 페이지 미리보기 */}
+              <div className="w-full aspect-video bg-[#2d2d2d] rounded border border-[#404040] overflow-hidden">
+                {thumbnails[page] ? (
+                  <img
+                    src={thumbnails[page]}
+                    alt={`Page ${page}`}
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center">
+                    <Loader2 className="w-4 h-4 animate-spin text-[#4a9eff]" />
+                  </div>
+                )}
+              </div>
+              {/* 페이지 번호 */}
+              <span className="text-xs text-[#a0a0a0] font-medium">{page}</span>
             </div>
           ))}
         </div>
