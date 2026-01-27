@@ -33,6 +33,50 @@ export default function Home() {
   const [pdfDocument, setPdfDocument] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
   const [pageInput, setPageInput] = useState("1");
   const [thumbnails, setThumbnails] = useState<{ [key: number]: string }>({});
+  const [scrollTimeout, setScrollTimeout] = useState<NodeJS.Timeout | null>(null);
+
+  // 스크롤 이벤트 핸들러
+  useEffect(() => {
+    const handleWheel = (e: WheelEvent) => {
+      // pdf-viewer 영역에서만 스크롤 감지
+      const pdfViewer = document.getElementById("pdf-viewer");
+      if (!pdfViewer || !pdfViewer.contains(e.target as Node)) return;
+
+      e.preventDefault();
+
+      // 스크롤 이벤트 중복 방지 (300ms)
+      if (scrollTimeout) return;
+
+      if (e.deltaY > 0) {
+        // 아래로 스크롤 - 다음 페이지
+        if (currentPage < totalPages) {
+          const newPage = currentPage + 1;
+          setCurrentPage(newPage);
+          setPageInput(String(newPage));
+          if (window.clarity) {
+            window.clarity("set", "page_navigation", `scroll_next_to_${newPage}`);
+          }
+        }
+      } else if (e.deltaY < 0) {
+        // 위로 스크롤 - 이전 페이지
+        if (currentPage > 1) {
+          const newPage = currentPage - 1;
+          setCurrentPage(newPage);
+          setPageInput(String(newPage));
+          if (window.clarity) {
+            window.clarity("set", "page_navigation", `scroll_prev_to_${newPage}`);
+          }
+        }
+      }
+
+      // 타임아웃 설정
+      const timeout = setTimeout(() => setScrollTimeout(null), 300);
+      setScrollTimeout(timeout);
+    };
+
+    window.addEventListener("wheel", handleWheel, { passive: false });
+    return () => window.removeEventListener("wheel", handleWheel);
+  }, [currentPage, totalPages, scrollTimeout]);
 
   // PDF 로드
   useEffect(() => {
