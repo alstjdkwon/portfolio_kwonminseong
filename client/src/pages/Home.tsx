@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useEffect } from "react";
 import {
   ChevronLeft,
   ChevronRight,
@@ -31,7 +31,6 @@ export default function Home() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [loading, setLoading] = useState(false);
   const [pdfDocument, setPdfDocument] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
   const [pageInput, setPageInput] = useState("1");
 
   // PDF 로드
@@ -64,27 +63,52 @@ export default function Home() {
         setLoading(true);
         console.log("페이지 렌더링 시작:", currentPage);
         
-        // 컨테이너가 준비될 때까지 대기
-        const container = containerRef.current;
-        if (!container) {
-          console.log("컨테이너 없음, 다시 시도");
-          setTimeout(() => {
-            renderPage();
-          }, 100);
+        // DOM 렌더링 완료 대기
+        await new Promise(resolve => setTimeout(resolve, 150));
+        
+        const container = document.getElementById("pdf-container");
+        const viewer = document.getElementById("pdf-viewer");
+        
+        if (!container || !viewer) {
+          console.error("컨테이너 또는 뷰어 없음", { container: !!container, viewer: !!viewer });
+          setLoading(false);
           return;
         }
 
+        console.log("DOM 요소 확인됨:", { container: !!container, viewer: !!viewer });
+
+        // 기존 캔버스 제거
+        container.innerHTML = "";
+
         const page = await pdfDocument.getPage(currentPage);
         
+        // 뷰어 영역 크기 사용
+        const maxWidth = viewer.clientWidth - 32; // p-4 = 16px * 2
+        const maxHeight = viewer.clientHeight - 32;
+        
+        console.log("뷰어 영역 크기:", { maxWidth, maxHeight, viewerWidth: viewer.clientWidth, viewerHeight: viewer.clientHeight });
+        
+        // 1920x1080 페이지를 뷰포트에 맞게 스케일링
+        const pageWidth = 1920;
+        const pageHeight = 1080;
+        const scaleToFit = Math.min(maxWidth / pageWidth, maxHeight / pageHeight) * 0.95;
+        
         // 줌 적용
-        const scale = zoom / 100;
+        const scale = (zoom / 100) * scaleToFit;
         const viewport = page.getViewport({ scale: scale });
 
-        // 컨테이너 초기화
-        container.innerHTML = "";
+        console.log("뷰포트 크기:", { width: viewport.width, height: viewport.height, scale, scaleToFit });
 
         // 캔버스 생성
         const canvas = document.createElement("canvas");
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        canvas.style.backgroundColor = "#f0f0f0";
+        canvas.style.border = "1px solid #ccc";
+        canvas.style.display = "block";
+        
+        console.log("캔버스 생성:", { width: canvas.width, height: canvas.height });
+
         const ctx = canvas.getContext("2d");
         if (!ctx) {
           console.error("Canvas context not available");
@@ -92,48 +116,25 @@ export default function Home() {
           return;
         }
 
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
-        canvas.style.display = "block";
-
         // 페이지 렌더링
         const renderContext: any = {
           canvasContext: ctx,
           viewport: viewport,
         };
 
+        console.log("렌더링 시작");
         await page.render(renderContext).promise;
-        console.log("캔버스 렌더링 완료");
-
-        // 회전 처리
-        if (rotation !== 0) {
-          const rotatedCanvas = document.createElement("canvas");
-          const rotatedCtx = rotatedCanvas.getContext("2d");
-          if (!rotatedCtx) {
-            setLoading(false);
-            return;
-          }
-
-          // 회전 각도에 따라 캔버스 크기 조정
-          if (rotation === 90 || rotation === 270) {
-            rotatedCanvas.width = canvas.height;
-            rotatedCanvas.height = canvas.width;
-          } else {
-            rotatedCanvas.width = canvas.width;
-            rotatedCanvas.height = canvas.height;
-          }
-
-          rotatedCtx.translate(rotatedCanvas.width / 2, rotatedCanvas.height / 2);
-          rotatedCtx.rotate((rotation * Math.PI) / 180);
-          rotatedCtx.drawImage(canvas, -canvas.width / 2, -canvas.height / 2);
-          rotatedCanvas.style.display = "block";
-
-          container.appendChild(rotatedCanvas);
-        } else {
-          container.appendChild(canvas);
-        }
-
         console.log("렌더링 완료");
+        
+        // 컨테이너에 캔버스 추가
+        container.appendChild(canvas);
+        console.log("캔버스 DOM에 추가됨");
+        
+        // 컨테이너 크기를 캔버스 크기에 맞게 조정
+        container.style.width = `${canvas.width}px`;
+        container.style.height = `${canvas.height}px`;
+        console.log("컨테이너 크기 조정:", { width: canvas.width, height: canvas.height });
+        
         setLoading(false);
       } catch (error) {
         console.error("페이지 렌더링 실패:", error);
@@ -142,7 +143,7 @@ export default function Home() {
     };
 
     renderPage();
-  }, [pdfDocument, currentPage, zoom, rotation, totalPages]);
+  }, [pdfDocument, currentPage, zoom, totalPages]);
 
   // 페이지 입력 처리
   const handlePageInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -164,7 +165,6 @@ export default function Home() {
       const newPage = currentPage - 1;
       setCurrentPage(newPage);
       setPageInput(String(newPage));
-      // Clarity에 페이지 이동 기록
       if (window.clarity) {
         window.clarity("set", "page_navigation", `previous_to_${newPage}`);
       }
@@ -176,7 +176,6 @@ export default function Home() {
       const newPage = currentPage + 1;
       setCurrentPage(newPage);
       setPageInput(String(newPage));
-      // Clarity에 페이지 이동 기록
       if (window.clarity) {
         window.clarity("set", "page_navigation", `next_to_${newPage}`);
       }
@@ -359,21 +358,23 @@ export default function Home() {
         </div>
 
         {/* 메인 뷰어 영역 */}
-        <div className="flex-1 overflow-auto bg-[#1a1a1a] flex items-center justify-center p-4">
+        <div id="pdf-viewer" className="flex-1 overflow-auto bg-[#1a1a1a] flex items-center justify-center p-4">
           {loading && (
             <div className="flex flex-col items-center gap-2">
               <Loader2 className="w-8 h-8 animate-spin text-[#4a9eff]" />
               <span className="text-sm text-[#a0a0a0]">로딩 중...</span>
             </div>
           )}
-          {!loading && totalPages > 0 && (
-            <div className="bg-white rounded shadow-2xl overflow-hidden">
-              <div
-                ref={containerRef}
-                className="flex items-center justify-center"
-              />
-            </div>
-          )}
+          <div 
+            id="pdf-container"
+            className="bg-white rounded shadow-2xl"
+            style={{
+              transform: `rotate(${rotation}deg)`,
+              transformOrigin: "center",
+              width: "auto",
+              height: "auto",
+            }}
+          />
         </div>
       </div>
     </div>
