@@ -172,12 +172,46 @@ export default function Home() {
       const timeout = setTimeout(() => setScrollTimeout(null), 300);
       setScrollTimeout(timeout);
     };
-
     window.addEventListener("wheel", handleWheel, { passive: false });
     return () => window.removeEventListener("wheel", handleWheel);
   }, [currentPage, totalPages, scrollTimeout]);
 
-  // 페이지 입력 처리
+  // 키보드 화살표 키 이벤트 핸들러
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // 입력 필드에 포커스되어 있으면 무시
+      if (e.target instanceof HTMLInputElement) return;
+
+      if (e.key === "ArrowRight") {
+        // 오른쪽 화살표 - 다음 페이지
+        e.preventDefault();
+        if (currentPage < totalPages) {
+          const newPage = currentPage + 1;
+          setCurrentPage(newPage);
+          setPageInput(String(newPage));
+          if (window.clarity) {
+            window.clarity("set", "page_navigation", `keyboard_next_to_${newPage}`);
+          }
+        }
+      } else if (e.key === "ArrowLeft") {
+        // 왼쪽 화살표 - 이전 페이지
+        e.preventDefault();
+        if (currentPage > 1) {
+          const newPage = currentPage - 1;
+          setCurrentPage(newPage);
+          setPageInput(String(newPage));
+          if (window.clarity) {
+            window.clarity("set", "page_navigation", `keyboard_prev_to_${newPage}`);
+          }
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [currentPage, totalPages]);
+
+  // 페이지 이동력 처리
   const handlePageInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setPageInput(e.target.value);
   };
