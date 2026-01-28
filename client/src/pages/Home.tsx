@@ -105,7 +105,9 @@ export default function Home() {
         const maxHeight = window.innerHeight * 0.85; // 대략 85% 높이
         const scaleToFit = Math.min(maxWidth / pageWidth, maxHeight / pageHeight) * 0.95;
         
-        const scale = (zoom / 100) * scaleToFit;
+        // 고해상도 렌더링을 위한 DPI 스케일 팩터 (2배 해상도)
+        const dpiScale = 2;
+        const scale = (zoom / 100) * scaleToFit * dpiScale;
         const viewport = page.getViewport({ scale: scale });
 
         const canvas = document.createElement("canvas");
@@ -250,7 +252,7 @@ export default function Home() {
 
   // 줌 컨트롤
   const handleZoomIn = () => {
-    const newZoom = Math.min(zoom + 10, 200);
+    const newZoom = Math.min(zoom + 10, 300);
     setZoom(newZoom);
     if (window.clarity) {
       window.clarity("set", "zoom_level", `${newZoom}%`);
@@ -258,7 +260,7 @@ export default function Home() {
   };
 
   const handleZoomOut = () => {
-    const newZoom = Math.max(zoom - 10, 50);
+    const newZoom = Math.max(zoom - 10, 25);
     setZoom(newZoom);
     if (window.clarity) {
       window.clarity("set", "zoom_level", `${newZoom}%`);
@@ -478,6 +480,7 @@ export default function Home() {
                 style={{
                   maxWidth: "100%",
                   maxHeight: "100%",
+                  imageRendering: "crisp-edges",
                 }}
               />
             ) : (
