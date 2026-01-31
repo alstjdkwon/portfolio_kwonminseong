@@ -1,28 +1,10 @@
-import { useState, useEffect, useRef } from "react";
-import {
-  ChevronLeft,
-  ChevronRight,
-  ZoomIn,
-  ZoomOut,
-  RotateCw,
-  Menu,
-  Download,
-  Loader2,
-} from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Menu, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, RotateCw, Download, Loader2 } from "lucide-react";
 import * as pdfjsLib from "pdfjs-dist";
-
-/**
- * Design Philosophy: Minimal Utility Interface (PDF Viewer)
- * - Dark tone background for professional PDF viewing
- * - Chrome PDF viewer UI replication
- * - All interactions tracked by Clarity analytics
- * - Optimized for long viewing sessions
- * - Pre-render all pages for instant scrolling
- */
+import { useEffect, useState, useRef } from "react";
 
 // PDF.js worker 설정
-pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
+pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.js";
 
 export default function Home() {
   const [currentPage, setCurrentPage] = useState(1);
@@ -30,43 +12,46 @@ export default function Home() {
   const [zoom, setZoom] = useState(100);
   const [rotation, setRotation] = useState(0);
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [pdfDocument, setPdfDocument] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
-  const [pageInput, setPageInput] = useState("1");
-  const [thumbnails, setThumbnails] = useState<{ [key: number]: string }>({});
   const [prerenderedPages, setPrerenderedPages] = useState<{ [key: number]: string }>({});
+  const [thumbnails, setThumbnails] = useState<{ [key: number]: string }>({});
+  const [isRendering, setIsRendering] = useState(false);
   const [renderProgress, setRenderProgress] = useState(0);
-  const [scrollTimeout, setScrollTimeout] = useState<NodeJS.Timeout | null>(null);
+  const [pageInput, setPageInput] = useState("1");
   const containerRef = useRef<HTMLDivElement>(null);
+  const lastScrollTimeRef = useRef(0);
 
-  // PDF 로드
+  // PDF 로드 및 렌더링
   useEffect(() => {
-    const loadPdf = async () => {
+    const loadPDF = async () => {
       try {
+        setIsRendering(true);
         const pdf = await pdfjsLib.getDocument("/portfolio.pdf").promise;
-        setPdfDocument(pdf);
         setTotalPages(pdf.numPages);
-        console.log("PDF 로드 완료:", pdf.numPages, "페이지");
         
         // 썸네일 생성
         generateThumbnails(pdf);
         
-        // 모든 페이지 미리 렌더링
-        preRenderAllPages(pdf);
+        // 모든 페이지 미리 렌더링 (병렬 처리)
+        await preRenderAllPages(pdf);
+        
+        setIsRendering(false);
       } catch (error) {
         console.error("PDF 로드 실패:", error);
+        setIsRendering(false);
       }
     };
-    loadPdf();
+
+    loadPDF();
   }, []);
 
   // 썸네일 생성
   const generateThumbnails = async (pdf: pdfjsLib.PDFDocumentProxy) => {
     const thumbs: { [key: number]: string } = {};
     
-    for (let i = 1; i <= Math.min(pdf.numPages, 28); i++) {
+    for (let i = 1; i <= pdf.numPages; i++) {
       try {
         const page = await pdf.getPage(i);
-        const viewport = page.getViewport({ scale: 0.2 });
+        const viewport = page.getViewport({ scale: 0.15 });
         
         const canvas = document.createElement("canvas");
         canvas.width = viewport.width;
@@ -75,12 +60,11 @@ export default function Home() {
         const ctx = canvas.getContext("2d");
         if (!ctx) continue;
         
-        const renderContext: any = {
+        await page.render({
           canvasContext: ctx,
           viewport: viewport,
-        };
+        } as any).promise;
         
-        await page.render(renderContext).promise;
         thumbs[i] = canvas.toDataURL("image/png");
       } catch (error) {
         console.error(`썸네일 생성 실패 (페이지 ${i}):`, error);
@@ -90,48 +74,65 @@ export default function Home() {
     setThumbnails(thumbs);
   };
 
-  // 모든 페이지 미리 렌더링
+  // 병렬 렌더링 헬퍼 함수
+  const renderPageToDataURL = async (pdf: pdfjsLib.PDFDocumentProxy, pageNum: number) => {
+    try {
+      const page = await pdf.getPage(pageNum);
+      
+      const pageWidth = 1920;
+      const pageHeight = 1080;
+      const maxWidth = window.innerWidth * 0.7;
+      const maxHeight = window.innerHeight * 0.85;
+      const scaleToFit = Math.min(maxWidth / pageWidth, maxHeight / pageHeight) * 0.95;
+      
+      const dpiScale = 2;
+      const scale = (zoom / 100) * scaleToFit * dpiScale;
+      const viewport = page.getViewport({ scale: scale });
+
+      const canvas = document.createElement("canvas");
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      canvas.style.backgroundColor = "#f0f0f0";
+      
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return null;
+      
+      const renderContext: any = {
+        canvasContext: ctx,
+        viewport: viewport,
+      };
+      
+      await page.render(renderContext).promise;
+      return canvas.toDataURL("image/png");
+    } catch (error) {
+      console.error(`페이지 ${pageNum} 렌더링 실패:`, error);
+      return null;
+    }
+  };
+
+  // 모든 페이지 미리 렌더링 (병렬 처리)
   const preRenderAllPages = async (pdf: pdfjsLib.PDFDocumentProxy) => {
     const prerendered: { [key: number]: string } = {};
+    const concurrency = 4; // 동시에 4개 페이지 렌더링
     
-    for (let i = 1; i <= pdf.numPages; i++) {
-      try {
-        const page = await pdf.getPage(i);
-        
-        // 1920x1080 페이지를 뷰포트에 맞게 스케일링
-        const pageWidth = 1920;
-        const pageHeight = 1080;
-        const maxWidth = window.innerWidth * 0.7; // 대략 70% 너비
-        const maxHeight = window.innerHeight * 0.85; // 대략 85% 높이
-        const scaleToFit = Math.min(maxWidth / pageWidth, maxHeight / pageHeight) * 0.95;
-        
-        // 고해상도 렌더링을 위한 DPI 스케일 팩터 (2배 해상도)
-        const dpiScale = 2;
-        const scale = (zoom / 100) * scaleToFit * dpiScale;
-        const viewport = page.getViewport({ scale: scale });
-
-        const canvas = document.createElement("canvas");
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
-        canvas.style.backgroundColor = "#f0f0f0";
-        
-        const ctx = canvas.getContext("2d");
-        if (!ctx) continue;
-        
-        const renderContext: any = {
-          canvasContext: ctx,
-          viewport: viewport,
-        };
-        
-        await page.render(renderContext).promise;
-        prerendered[i] = canvas.toDataURL("image/png");
-        
-        // 진행률 업데이트
-        setRenderProgress(Math.round((i / pdf.numPages) * 100));
-        console.log(`페이지 ${i}/${pdf.numPages} 렌더링 완료`);
-      } catch (error) {
-        console.error(`페이지 ${i} 렌더링 실패:`, error);
+    for (let i = 1; i <= pdf.numPages; i += concurrency) {
+      // 4개씩 묶어서 병렬 렌더링
+      const batch = [];
+      for (let j = 0; j < concurrency && i + j <= pdf.numPages; j++) {
+        batch.push(renderPageToDataURL(pdf, i + j));
       }
+      
+      const results = await Promise.all(batch);
+      results.forEach((dataUrl, idx) => {
+        if (dataUrl) {
+          prerendered[i + idx] = dataUrl;
+        }
+      });
+      
+      // 진행률 업데이트
+      const completed = Math.min(i + concurrency - 1, pdf.numPages);
+      setRenderProgress(Math.round((completed / pdf.numPages) * 100));
+      console.log(`페이지 ${i}~${completed} 렌더링 완료 (${Math.round((completed / pdf.numPages) * 100)}%)`);
     }
     
     setPrerenderedPages(prerendered);
@@ -139,73 +140,47 @@ export default function Home() {
     console.log("모든 페이지 렌더링 완료");
   };
 
-  // 스크롤 이벤트 핸들러
+  // 페이지 입력 처리
+  const handlePageInput = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    setPageInput(value);
+    
+    const pageNum = parseInt(value);
+    if (pageNum >= 1 && pageNum <= totalPages) {
+      setCurrentPage(pageNum);
+      if (window.clarity) {
+        window.clarity("set", "page_navigation", `input_page_${pageNum}`);
+      }
+    }
+  };
+
+  // 스크롤 이벤트
   useEffect(() => {
     const handleWheel = (e: WheelEvent) => {
-      const pdfViewer = document.getElementById("pdf-viewer");
-      if (!pdfViewer || !pdfViewer.contains(e.target as Node)) return;
-
-      e.preventDefault();
-
-      if (scrollTimeout) return;
+      const now = Date.now();
+      if (now - lastScrollTimeRef.current < 300) return;
+      lastScrollTimeRef.current = now;
 
       if (e.deltaY > 0) {
-        // 아래로 스크롤 - 다음 페이지
-        if (currentPage < totalPages) {
-          const newPage = currentPage + 1;
-          setCurrentPage(newPage);
-          setPageInput(String(newPage));
-          if (window.clarity) {
-            window.clarity("set", "page_navigation", `scroll_next_to_${newPage}`);
-          }
-        }
+        goToNextPage();
       } else if (e.deltaY < 0) {
-        // 위로 스크롤 - 이전 페이지
-        if (currentPage > 1) {
-          const newPage = currentPage - 1;
-          setCurrentPage(newPage);
-          setPageInput(String(newPage));
-          if (window.clarity) {
-            window.clarity("set", "page_navigation", `scroll_prev_to_${newPage}`);
-          }
-        }
+        goPreviousPage();
       }
-
-      const timeout = setTimeout(() => setScrollTimeout(null), 300);
-      setScrollTimeout(timeout);
     };
-    window.addEventListener("wheel", handleWheel, { passive: false });
-    return () => window.removeEventListener("wheel", handleWheel);
-  }, [currentPage, totalPages, scrollTimeout]);
 
-  // 키보드 화살표 키 이벤트 핸들러
+    window.addEventListener("wheel", handleWheel, { passive: true });
+    return () => window.removeEventListener("wheel", handleWheel);
+  }, [currentPage, totalPages]);
+
+  // 키보드 이벤트
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // 입력 필드에 포커스되어 있으면 무시
-      if (e.target instanceof HTMLInputElement) return;
+      if (e.target === document.querySelector("input[type='number']")) return;
 
       if (e.key === "ArrowRight") {
-        // 오른쪽 화살표 - 다음 페이지
-        e.preventDefault();
-        if (currentPage < totalPages) {
-          const newPage = currentPage + 1;
-          setCurrentPage(newPage);
-          setPageInput(String(newPage));
-          if (window.clarity) {
-            window.clarity("set", "page_navigation", `keyboard_next_to_${newPage}`);
-          }
-        }
+        goToNextPage();
       } else if (e.key === "ArrowLeft") {
-        // 왼쪽 화살표 - 이전 페이지
-        e.preventDefault();
-        if (currentPage > 1) {
-          const newPage = currentPage - 1;
-          setCurrentPage(newPage);
-          setPageInput(String(newPage));
-          if (window.clarity) {
-            window.clarity("set", "page_navigation", `keyboard_prev_to_${newPage}`);
-          }
-        }
+        goPreviousPage();
       }
     };
 
@@ -213,22 +188,8 @@ export default function Home() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [currentPage, totalPages]);
 
-  // 페이지 이동력 처리
-  const handlePageInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setPageInput(e.target.value);
-  };
-
-  const handlePageInputSubmit = () => {
-    const page = parseInt(pageInput, 10);
-    if (page >= 1 && page <= totalPages) {
-      setCurrentPage(page);
-    } else {
-      setPageInput(String(currentPage));
-    }
-  };
-
   // 페이지 이동
-  const goToPreviousPage = () => {
+  const goPreviousPage = () => {
     if (currentPage > 1) {
       const newPage = currentPage - 1;
       setCurrentPage(newPage);
@@ -293,12 +254,9 @@ export default function Home() {
     }
   };
 
-  // 렌더링 진행 중인지 확인
-  const isRendering = renderProgress < 100 && totalPages > 0;
-
   return (
-    <div className="flex h-screen bg-[#2d2d2d] text-[#e0e0e0]">
-      {/* 사이드바 - 페이지 썸네일 */}
+    <div className="h-screen w-screen flex bg-[#1a1a1a] text-[#e0e0e0]">
+      {/* 사이드바 */}
       <div
         className={`transition-all duration-300 ease-in-out ${
           sidebarOpen ? "w-48" : "w-0"
@@ -353,9 +311,8 @@ export default function Home() {
             >
               <Menu className="w-5 h-5" />
             </Button>
-            <span className="text-sm font-medium ml-2 truncate">
-              권민성_포트폴리오.pdf
-            </span>
+
+            <span className="text-sm text-[#a0a0a0] ml-2">권민성_포트폴리오.pdf</span>
           </div>
 
           {/* 중앙: 페이지 네비게이션 */}
@@ -363,25 +320,21 @@ export default function Home() {
             <Button
               variant="ghost"
               size="sm"
-              onClick={goToPreviousPage}
+              onClick={goPreviousPage}
               disabled={currentPage === 1}
               className="text-[#e0e0e0] hover:bg-[#505050] disabled:opacity-50"
             >
               <ChevronLeft className="w-5 h-5" />
             </Button>
 
-            <div className="flex items-center gap-1 px-2">
+            <div className="flex items-center gap-1">
               <input
-                type="text"
+                type="number"
+                min="1"
+                max={totalPages}
                 value={pageInput}
-                onChange={handlePageInputChange}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    handlePageInputSubmit();
-                  }
-                }}
-                onBlur={handlePageInputSubmit}
-                className="w-10 bg-[#2d2d2d] text-[#e0e0e0] border border-[#404040] rounded px-1 py-0.5 text-center text-sm"
+                onChange={handlePageInput}
+                className="w-12 text-center bg-[#2d2d2d] text-[#e0e0e0] border border-[#404040] rounded px-2 py-1 text-sm"
               />
               <span className="text-sm text-[#a0a0a0]">/ {totalPages}</span>
             </div>
@@ -397,7 +350,7 @@ export default function Home() {
             </Button>
           </div>
 
-          {/* 오른쪽: 줌 및 기타 컨트롤 */}
+          {/* 오른쪽: 줌 및 컨트롤 */}
           <div className="flex items-center gap-1">
             <Button
               variant="ghost"
