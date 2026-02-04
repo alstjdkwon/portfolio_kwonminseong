@@ -257,15 +257,23 @@ export default function Home() {
       if (e.target instanceof HTMLInputElement) return;
 
       if (e.key === "ArrowRight") {
-        nextPage();
+        setCurrentPage((prev) => Math.min(prev + 1, totalPages));
+        setPageInput((prev) => {
+          const next = Math.min(parseInt(prev) + 1, totalPages);
+          return next.toString();
+        });
       } else if (e.key === "ArrowLeft") {
-        prevPage();
+        setCurrentPage((prev) => Math.max(prev - 1, 1));
+        setPageInput((prev) => {
+          const next = Math.max(parseInt(prev) - 1, 1);
+          return next.toString();
+        });
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [currentPage, totalPages]);
+  }, [totalPages]);
 
   // 링크 오버레이 업데이트
   useEffect(() => {
@@ -424,7 +432,7 @@ export default function Home() {
         </div>
 
         {/* 뷰어 영역 */}
-        <div className="flex-1 overflow-auto bg-[#1a1a1a] flex items-center justify-center p-4">
+        <div className="flex-1 bg-[#1a1a1a] flex items-center justify-center p-4 overflow-hidden">
           {isRendering && renderProgress < 100 && (
             <div className="text-center">
               <Loader2 className="animate-spin text-blue-500 mb-4 mx-auto" size={40} />
