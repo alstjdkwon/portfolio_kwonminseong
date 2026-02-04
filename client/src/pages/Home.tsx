@@ -31,16 +31,22 @@ export default function Home() {
         setTotalPages(pdf.numPages);
         setPdfDocument(pdf);
         
-        // 썸네일 생성
+        // 썸네일 생성 (백그라운드)
         generateThumbnails(pdf);
         
-        // 모든 페이지의 어노테이션(링크) 추출
-        await extractAllAnnotations(pdf);
+        // 모든 페이지의 어노테이션(링크) 추출 (백그라운드)
+        extractAllAnnotations(pdf);
         
-        // 모든 페이지 미리 렌더링 (병렬 처리)
-        await preRenderAllPages(pdf);
-        
+        // 첫 페이지 우선 렌더링
+        const firstPageUrl = await renderPageToDataURL(pdf, 1);
+        if (firstPageUrl) {
+          setPrerenderedPages({ 1: firstPageUrl });
+          setRenderProgress(5);
+        }
         setIsRendering(false);
+        
+        // 나머지 페이지 백그라운드 렌더링
+        preRenderRemainingPages(pdf);
       } catch (error) {
         console.error("PDF 로드 실패:", error);
         setIsRendering(false);
@@ -143,6 +149,37 @@ export default function Home() {
       console.error(`페이지 ${pageNum} 렌더링 실패:`, error);
       return null;
     }
+  };
+
+  // 나머지 페이지 백그라운드 렌더링 (첫 페이지 제외)
+  const preRenderRemainingPages = async (pdf: pdfjsLib.PDFDocumentProxy) => {
+    const prerendered: { [key: number]: string } = {};
+    const concurrency = 4; // 동시에 4개 페이지 렌더링
+    
+    for (let i = 2; i <= pdf.numPages; i += concurrency) {
+      // 4개씩 묘어서 병렬 렌더링
+      const batch = [];
+      for (let j = 0; j < concurrency && i + j <= pdf.numPages; j++) {
+        batch.push(renderPageToDataURL(pdf, i + j));
+      }
+      
+      const results = await Promise.all(batch);
+      results.forEach((dataUrl, idx) => {
+        if (dataUrl) {
+          prerendered[i + idx] = dataUrl;
+        }
+      });
+      
+      // 진행률 업데이트
+      const completed = Math.min(i + concurrency - 1, pdf.numPages);
+      setRenderProgress(Math.round((completed / pdf.numPages) * 100));
+      console.log(`페이지 ${i}~${completed} 렌더링 완료 (${Math.round((completed / pdf.numPages) * 100)}%)`);
+    }
+    
+    // 기존 렌더링된 페이지와 병합
+    setPrerenderedPages(prev => ({ ...prev, ...prerendered }));
+    setRenderProgress(100);
+    console.log("모든 페이지 렌더링 완료");
   };
 
   // 모든 페이지 미리 렌더링 (병렬 처리)
@@ -432,15 +469,16 @@ export default function Home() {
         </div>
 
         {/* 뷰어 영역 */}
-        <div className="flex-1 bg-[#1a1a1a] flex items-center justify-center p-4 overflow-hidden">
-          {isRendering && renderProgress < 100 && (
-            <div className="text-center">
-              <Loader2 className="animate-spin text-blue-500 mb-4 mx-auto" size={40} />
-              <p className="text-white">페이지 렌더링 중... {renderProgress}%</p>
+        <div className="flex-1 bg-[#1a1a1a] flex items-center justify-center p-4 overflow-hidden relative">
+          {/* 렌더링 진행률 인디케이터 (백그라운드) */}
+          {renderProgress > 5 && renderProgress < 100 && (
+            <div className="absolute bottom-4 right-4 flex items-center gap-2">
+              <Loader2 className="animate-spin text-blue-500" size={16} />
+              <p className="text-white text-xs">렌더링 중... {renderProgress}%</p>
             </div>
           )}
 
-          {!isRendering && prerenderedPages[currentPage] && (
+          {prerenderedPages[currentPage] && (
             <div
               ref={containerRef}
               className="relative"
