@@ -1,3 +1,4 @@
+"use client";
 import { Button } from "@/components/ui/button";
 import { Menu, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, RotateCw, Download, Loader2 } from "lucide-react";
 import * as pdfjsLib from "pdfjs-dist";
@@ -17,6 +18,10 @@ export default function Home() {
   const [isRendering, setIsRendering] = useState(false);
   const [renderProgress, setRenderProgress] = useState(0);
   const [pageInput, setPageInput] = useState("1");
+  const [pdfDocument, setPdfDocument] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
+  const [pageAnnotations, setPageAnnotations] = useState<{ [key: number]: any[] }>({});
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const linkOverlayRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const lastScrollTimeRef = useRef(0);
 
@@ -27,9 +32,13 @@ export default function Home() {
         setIsRendering(true);
         const pdf = await pdfjsLib.getDocument("/portfolio.pdf").promise;
         setTotalPages(pdf.numPages);
+        setPdfDocument(pdf);
         
         // 썸네일 생성
         generateThumbnails(pdf);
+        
+        // 모든 페이지의 어노테이션(링크) 추출
+        await extractAllAnnotations(pdf);
         
         // 모든 페이지 미리 렌더링 (병렬 처리)
         await preRenderAllPages(pdf);
@@ -43,6 +52,24 @@ export default function Home() {
 
     loadPDF();
   }, []);
+
+  // 모든 페이지의 어노테이션 추출
+  const extractAllAnnotations = async (pdf: pdfjsLib.PDFDocumentProxy) => {
+    const annotations: { [key: number]: any[] } = {};
+    
+    for (let i = 1; i <= pdf.numPages; i++) {
+      try {
+        const page = await pdf.getPage(i);
+        const annots = await page.getAnnotations();
+        annotations[i] = annots.filter((a: any) => a.subtype === "Link");
+      } catch (error) {
+        console.error(`어노테이션 추출 실패 (페이지 ${i}):`, error);
+        annotations[i] = [];
+      }
+    }
+    
+    setPageAnnotations(annotations);
+  };
 
   // 썸네일 생성
   const generateThumbnails = async (pdf: pdfjsLib.PDFDocumentProxy) => {
@@ -74,16 +101,135 @@ export default function Home() {
     setThumbnails(thumbs);
   };
 
-  // 병렬 렌더링 헬퍼 함수
+  // Canvas로 PDF 페이지 렌더링
+  const renderPageToCanvas = async (pdf: pdfjsLib.PDFDocumentProxy, pageNum: number, canvas: HTMLCanvasElement) => {
+    try {
+      const page = await pdf.getPage(pageNum);
+      
+      // 처음 렌더링을 위한 viewport 계산
+      const initialViewport = page.getViewport({ scale: 1 });
+      const maxWidth = window.innerWidth * 0.7;
+      const maxHeight = window.innerHeight * 0.85;
+      const scaleToFit = Math.min(maxWidth / initialViewport.width, maxHeight / initialViewport.height) * 0.95;
+      
+      const dpiScale = 2;
+      const scale = (zoom / 100) * scaleToFit * dpiScale;
+      const viewport = page.getViewport({ scale: scale });
+
+      // Canvas 크기 설정
+      const canvasWidth = Math.max(Math.ceil(viewport.width), 1);
+      const canvasHeight = Math.max(Math.ceil(viewport.height), 1);
+      const MAX_CANVAS_SIZE = 32767;
+      
+      if (canvasWidth > MAX_CANVAS_SIZE || canvasHeight > MAX_CANVAS_SIZE) {
+        console.warn(`Canvas 크기 초과 (페이지 ${pageNum}): ${canvasWidth}x${canvasHeight}`);
+        return;
+      }
+
+      canvas.width = canvasWidth;
+      canvas.height = canvasHeight;
+      canvas.style.backgroundColor = "#f0f0f0";
+      
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      if (!ctx) return;
+      
+      const renderContext: any = {
+        canvasContext: ctx,
+        viewport: viewport,
+      };
+      
+      await page.render(renderContext).promise;
+    } catch (error) {
+      console.error(`Canvas 렌더링 실패 (페이지 ${pageNum}):`, error);
+    }
+  };
+
+  // 링크 오버레이 업데이트
+  useEffect(() => {
+    if (!pdfDocument || !pageAnnotations[currentPage] || !linkOverlayRef.current) return;
+
+    try {
+      const overlay = linkOverlayRef.current;
+      overlay.innerHTML = "";
+      
+      const annotations = pageAnnotations[currentPage] || [];
+      if (annotations.length === 0) return;
+
+      // Canvas 또는 img 요소로부터 렌더링 정보 가져오기
+      const renderElement = canvasRef.current || containerRef.current?.querySelector("img");
+      if (!renderElement) return;
+
+      const rect = renderElement.getBoundingClientRect();
+      const containerRect = containerRef.current?.getBoundingClientRect();
+      if (!containerRect) return;
+
+      annotations.forEach((annot: any) => {
+        if (!annot.rect) return;
+        
+        const [x1, y1, x2, y2] = annot.rect;
+        
+        let elementHeight = 1080;
+        let elementWidth = 1920;
+        
+        if (renderElement instanceof HTMLCanvasElement) {
+          elementHeight = renderElement.height;
+          elementWidth = renderElement.width;
+        } else if (renderElement instanceof HTMLImageElement) {
+          elementHeight = renderElement.naturalHeight || renderElement.height;
+          elementWidth = renderElement.naturalWidth || renderElement.width;
+        }
+        
+        const pdfHeight = elementHeight;
+        const top = pdfHeight - y2;
+        const bottom = pdfHeight - y1;
+        
+        const scaleX = rect.width / elementWidth;
+        const scaleY = rect.height / pdfHeight;
+        
+        const linkElement = document.createElement("a");
+        linkElement.href = annot.url || "#";
+        linkElement.target = "_blank";
+        linkElement.rel = "noopener noreferrer";
+        linkElement.style.cssText = `
+          position: absolute;
+          left: ${x1 * scaleX}px;
+          top: ${top * scaleY}px;
+          width: ${(x2 - x1) * scaleX}px;
+          height: ${(bottom - top) * scaleY}px;
+          cursor: pointer;
+          opacity: 0;
+          z-index: 10;
+        `;
+        
+        linkElement.addEventListener("click", (e) => {
+          if (window.clarity) {
+            window.clarity("set", "link_click", `page_${currentPage}_url_${annot.url}`);
+          }
+        });
+        
+        overlay.appendChild(linkElement);
+      });
+    } catch (error) {
+      console.error("링크 오버레이 업데이트 실패:", error);
+    }
+  }, [currentPage, zoom, pageAnnotations, pdfDocument]);
+
+  // Canvas로 현재 페이지 렌더링
+  useEffect(() => {
+    if (!pdfDocument || !canvasRef.current) return;
+    
+    renderPageToCanvas(pdfDocument, currentPage, canvasRef.current);
+  }, [currentPage, zoom, pdfDocument]);
+
+  // 병렬 렌더링 헬퍼 함수 (DataURL로 변환을 위한 레거시)
   const renderPageToDataURL = async (pdf: pdfjsLib.PDFDocumentProxy, pageNum: number) => {
     try {
       const page = await pdf.getPage(pageNum);
       
-      const pageWidth = 1920;
-      const pageHeight = 1080;
+      const initialViewport = page.getViewport({ scale: 1 });
       const maxWidth = window.innerWidth * 0.7;
       const maxHeight = window.innerHeight * 0.85;
-      const scaleToFit = Math.min(maxWidth / pageWidth, maxHeight / pageHeight) * 0.95;
+      const scaleToFit = Math.min(maxWidth / initialViewport.width, maxHeight / initialViewport.height) * 0.95;
       
       const dpiScale = 2;
       const scale = (zoom / 100) * scaleToFit * dpiScale;
@@ -417,7 +563,7 @@ export default function Home() {
         <div id="pdf-viewer" className="flex-1 overflow-auto bg-[#1a1a1a] flex items-center justify-center p-4">
           <div 
             ref={containerRef}
-            className="bg-white rounded shadow-2xl"
+            className="bg-white rounded shadow-2xl relative"
             style={{
               transform: `rotate(${rotation}deg)`,
               transformOrigin: "center",
@@ -425,17 +571,29 @@ export default function Home() {
               height: "auto",
             }}
           >
-            {prerenderedPages[currentPage] ? (
-              <img
-                src={prerenderedPages[currentPage]}
-                alt={`Page ${currentPage}`}
-                className="block"
-                style={{
-                  maxWidth: "100%",
-                  maxHeight: "100%",
-                  imageRendering: "crisp-edges",
-                }}
-              />
+            {pdfDocument ? (
+              <>
+                <canvas
+                  ref={canvasRef}
+                  className="block"
+                  style={{
+                    maxWidth: "100%",
+                    maxHeight: "100%",
+                    imageRendering: "crisp-edges",
+                  }}
+                />
+                {/* 링크 오버레이 */}
+                <div
+                  ref={linkOverlayRef}
+                  style={{
+                    position: "absolute",
+                    top: 0,
+                    left: 0,
+                    width: "100%",
+                    height: "100%",
+                  }}
+                />
+              </>
             ) : (
               <div className="flex items-center justify-center p-8">
                 <Loader2 className="w-8 h-8 animate-spin text-[#4a9eff]" />
