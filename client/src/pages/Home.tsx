@@ -1,4 +1,3 @@
-import { Button } from "@/components/ui/button";
 import { Menu, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, RotateCw, Download, Loader2 } from "lucide-react";
 import * as pdfjsLib from "pdfjs-dist";
 import { useEffect, useState, useRef } from "react";
@@ -17,8 +16,11 @@ export default function Home() {
   const [isRendering, setIsRendering] = useState(false);
   const [renderProgress, setRenderProgress] = useState(0);
   const [pageInput, setPageInput] = useState("1");
+  const [pdfDocument, setPdfDocument] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
+  const [pageAnnotations, setPageAnnotations] = useState<{ [key: number]: any[] }>({});
   const containerRef = useRef<HTMLDivElement>(null);
   const lastScrollTimeRef = useRef(0);
+  const linkOverlayRef = useRef<HTMLDivElement>(null);
 
   // PDF 로드 및 렌더링
   useEffect(() => {
@@ -27,9 +29,13 @@ export default function Home() {
         setIsRendering(true);
         const pdf = await pdfjsLib.getDocument("/portfolio.pdf").promise;
         setTotalPages(pdf.numPages);
+        setPdfDocument(pdf);
         
         // 썸네일 생성
         generateThumbnails(pdf);
+        
+        // 모든 페이지의 어노테이션(링크) 추출
+        await extractAllAnnotations(pdf);
         
         // 모든 페이지 미리 렌더링 (병렬 처리)
         await preRenderAllPages(pdf);
@@ -43,6 +49,24 @@ export default function Home() {
 
     loadPDF();
   }, []);
+
+  // 모든 페이지의 어노테이션 추출
+  const extractAllAnnotations = async (pdf: pdfjsLib.PDFDocumentProxy) => {
+    const annotations: { [key: number]: any[] } = {};
+    
+    for (let i = 1; i <= pdf.numPages; i++) {
+      try {
+        const page = await pdf.getPage(i);
+        const annots = await page.getAnnotations();
+        annotations[i] = annots.filter((a: any) => a.subtype === "Link");
+      } catch (error) {
+        console.error(`어노테이션 추출 실패 (페이지 ${i}):`, error);
+        annotations[i] = [];
+      }
+    }
+    
+    setPageAnnotations(annotations);
+  };
 
   // 썸네일 생성
   const generateThumbnails = async (pdf: pdfjsLib.PDFDocumentProxy) => {
@@ -148,13 +172,57 @@ export default function Home() {
     const pageNum = parseInt(value);
     if (pageNum >= 1 && pageNum <= totalPages) {
       setCurrentPage(pageNum);
-      if (window.clarity) {
-        window.clarity("set", "page_navigation", `input_page_${pageNum}`);
-      }
     }
   };
 
-  // 스크롤 이벤트
+  // 페이지 입력 확인
+  const handlePageInputBlur = () => {
+    const pageNum = parseInt(pageInput);
+    if (isNaN(pageNum) || pageNum < 1 || pageNum > totalPages) {
+      setPageInput(currentPage.toString());
+    }
+  };
+
+  // 다음 페이지
+  const nextPage = () => {
+    if (currentPage < totalPages) {
+      setCurrentPage(currentPage + 1);
+      setPageInput((currentPage + 1).toString());
+    }
+  };
+
+  // 이전 페이지
+  const prevPage = () => {
+    if (currentPage > 1) {
+      setCurrentPage(currentPage - 1);
+      setPageInput((currentPage - 1).toString());
+    }
+  };
+
+  // 줌 인
+  const handleZoomIn = () => {
+    setZoom(Math.min(zoom + 10, 300));
+  };
+
+  // 줌 아웃
+  const handleZoomOut = () => {
+    setZoom(Math.max(zoom - 10, 25));
+  };
+
+  // 회전
+  const handleRotate = () => {
+    setRotation((rotation + 90) % 360);
+  };
+
+  // 다운로드
+  const handleDownload = () => {
+    const link = document.createElement("a");
+    link.href = "/portfolio.pdf";
+    link.download = "portfolio.pdf";
+    link.click();
+  };
+
+  // 휠 스크롤 이벤트
   useEffect(() => {
     const handleWheel = (e: WheelEvent) => {
       const now = Date.now();
@@ -162,9 +230,9 @@ export default function Home() {
       lastScrollTimeRef.current = now;
 
       if (e.deltaY > 0) {
-        goToNextPage();
+        nextPage();
       } else if (e.deltaY < 0) {
-        goPreviousPage();
+        prevPage();
       }
     };
 
@@ -175,12 +243,12 @@ export default function Home() {
   // 키보드 이벤트
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.target === document.querySelector("input[type='number']")) return;
+      if (e.target instanceof HTMLInputElement) return;
 
       if (e.key === "ArrowRight") {
-        goToNextPage();
+        nextPage();
       } else if (e.key === "ArrowLeft") {
-        goPreviousPage();
+        prevPage();
       }
     };
 
@@ -188,269 +256,205 @@ export default function Home() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [currentPage, totalPages]);
 
-  // 페이지 이동
-  const goPreviousPage = () => {
-    if (currentPage > 1) {
-      const newPage = currentPage - 1;
-      setCurrentPage(newPage);
-      setPageInput(String(newPage));
-      if (window.clarity) {
-        window.clarity("set", "page_navigation", `previous_to_${newPage}`);
+  // 링크 오버레이 업데이트
+  useEffect(() => {
+    if (!linkOverlayRef.current || !pdfDocument) return;
+
+    const updateLinkOverlay = async () => {
+      const overlay = linkOverlayRef.current;
+      if (!overlay) return;
+
+      // 기존 링크 제거
+      overlay.innerHTML = "";
+
+      const annotations = pageAnnotations[currentPage] || [];
+      if (annotations.length === 0) return;
+
+      try {
+        const page = await pdfDocument.getPage(currentPage);
+        const pageWidth = 1920;
+        const pageHeight = 1080;
+        const maxWidth = window.innerWidth * 0.7;
+        const maxHeight = window.innerHeight * 0.85;
+        const scaleToFit = Math.min(maxWidth / pageWidth, maxHeight / pageHeight) * 0.95;
+        const dpiScale = 2;
+        const scale = (zoom / 100) * scaleToFit * dpiScale;
+        const viewport = page.getViewport({ scale: scale });
+
+        // 각 링크에 대해 오버레이 생성
+        for (const annot of annotations) {
+          if (annot.subtype !== "Link") continue;
+
+          const rect = annot.rect;
+          if (!rect) continue;
+
+          // PDF 좌표를 스크린 좌표로 변환
+          const [x1, y1, x2, y2] = rect;
+          const pageHeight_pdf = viewport.height / scale;
+          
+          const screenX1 = (x1 / pageWidth) * viewport.width;
+          const screenY1 = ((pageHeight_pdf - y2) / pageHeight_pdf) * viewport.height;
+          const screenX2 = (x2 / pageWidth) * viewport.width;
+          const screenY2 = ((pageHeight_pdf - y1) / pageHeight_pdf) * viewport.height;
+
+          const linkElement = document.createElement("a");
+          linkElement.style.position = "absolute";
+          linkElement.style.left = `${screenX1}px`;
+          linkElement.style.top = `${screenY1}px`;
+          linkElement.style.width = `${screenX2 - screenX1}px`;
+          linkElement.style.height = `${screenY2 - screenY1}px`;
+          linkElement.style.cursor = "pointer";
+          linkElement.style.zIndex = "10";
+
+          // 링크 대상 설정
+          if (annot.url) {
+            linkElement.href = annot.url;
+            linkElement.target = "_blank";
+            linkElement.rel = "noopener noreferrer";
+          } else if (annot.dest) {
+            // 내부 링크는 일단 무시 (필요시 구현 가능)
+            linkElement.style.cursor = "default";
+          }
+
+          overlay.appendChild(linkElement);
+        }
+      } catch (error) {
+        console.error("링크 오버레이 업데이트 실패:", error);
       }
-    }
-  };
+    };
 
-  const goToNextPage = () => {
-    if (currentPage < totalPages) {
-      const newPage = currentPage + 1;
-      setCurrentPage(newPage);
-      setPageInput(String(newPage));
-      if (window.clarity) {
-        window.clarity("set", "page_navigation", `next_to_${newPage}`);
-      }
-    }
-  };
-
-  // 줌 컨트롤
-  const handleZoomIn = () => {
-    const newZoom = Math.min(zoom + 10, 300);
-    setZoom(newZoom);
-    if (window.clarity) {
-      window.clarity("set", "zoom_level", `${newZoom}%`);
-    }
-  };
-
-  const handleZoomOut = () => {
-    const newZoom = Math.max(zoom - 10, 25);
-    setZoom(newZoom);
-    if (window.clarity) {
-      window.clarity("set", "zoom_level", `${newZoom}%`);
-    }
-  };
-
-  // 회전
-  const handleRotate = () => {
-    const newRotation = (rotation + 90) % 360;
-    setRotation(newRotation);
-    if (window.clarity) {
-      window.clarity("set", "page_rotation", `${newRotation}°`);
-    }
-  };
-
-  // 사이드바 토글
-  const handleSidebarToggle = () => {
-    setSidebarOpen(!sidebarOpen);
-    if (window.clarity) {
-      window.clarity("set", "sidebar_toggle", sidebarOpen ? "closed" : "opened");
-    }
-  };
-
-  // 썸네일 클릭
-  const handleThumbnailClick = (page: number) => {
-    setCurrentPage(page);
-    setPageInput(String(page));
-    if (window.clarity) {
-      window.clarity("set", "page_navigation", `thumbnail_click_page_${page}`);
-    }
-  };
+    updateLinkOverlay();
+  }, [currentPage, zoom, pageAnnotations, pdfDocument]);
 
   return (
-    <div className="h-screen w-screen flex bg-[#1a1a1a] text-[#e0e0e0]">
+    <div className="min-h-screen bg-[#2a2a2a] flex">
       {/* 사이드바 */}
       <div
-        className={`transition-all duration-300 ease-in-out ${
+        className={`${
           sidebarOpen ? "w-48" : "w-0"
-        } bg-[#1a1a1a] border-r border-[#404040] overflow-hidden flex flex-col`}
+        } bg-[#1a1a1a] overflow-y-auto transition-all duration-300 border-r border-[#444]`}
       >
-        <div className="flex-1 overflow-y-auto p-3 space-y-3">
-          {Array.from({ length: totalPages }, (_, i) => i + 1).map((page) => (
-            <div
-              key={page}
-              onClick={() => handleThumbnailClick(page)}
-              className={`
-                cursor-pointer rounded transition-all duration-200 flex flex-col items-center gap-2
-                ${
-                  currentPage === page
-                    ? "ring-2 ring-[#4a9eff]"
-                    : "hover:opacity-80"
-                }
-              `}
-            >
-              {/* 페이지 미리보기 */}
-              <div className="w-full aspect-video bg-[#2d2d2d] rounded border border-[#404040] overflow-hidden">
-                {thumbnails[page] ? (
+        <div className="p-2 space-y-2">
+          {Array.from({ length: totalPages }).map((_, i) => (
+            <div key={i + 1} className="cursor-pointer" onClick={() => {
+              setCurrentPage(i + 1);
+              setPageInput((i + 1).toString());
+            }}>
+              <div
+                className={`rounded border-2 overflow-hidden ${
+                  currentPage === i + 1 ? "border-blue-500" : "border-[#444]"
+                }`}
+              >
+                {thumbnails[i + 1] && (
                   <img
-                    src={thumbnails[page]}
-                    alt={`Page ${page}`}
-                    className="w-full h-full object-cover"
+                    src={thumbnails[i + 1]}
+                    alt={`Page ${i + 1}`}
+                    className="w-full h-auto"
                   />
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center">
-                    <Loader2 className="w-4 h-4 animate-spin text-[#4a9eff]" />
-                  </div>
                 )}
               </div>
-              {/* 페이지 번호 */}
-              <span className="text-xs text-[#a0a0a0] font-medium">{page}</span>
+              <p className="text-center text-white text-sm mt-1">{i + 1}</p>
             </div>
           ))}
         </div>
       </div>
 
-      {/* 메인 콘텐츠 영역 */}
+      {/* 메인 콘텐츠 */}
       <div className="flex-1 flex flex-col">
         {/* 상단 도구 모음 */}
-        <div className="bg-[#3d3d3d] border-b border-[#404040] px-4 py-2 flex items-center justify-between gap-2 h-14">
-          {/* 왼쪽: 메뉴 및 파일 정보 */}
+        <div className="bg-[#3a3a3a] border-b border-[#555] px-4 py-3 flex items-center gap-4">
+          <button
+            onClick={() => setSidebarOpen(!sidebarOpen)}
+            className="p-2 hover:bg-[#4a4a4a] rounded"
+          >
+            <Menu size={20} className="text-white" />
+          </button>
+
+          <button onClick={prevPage} className="p-2 hover:bg-[#4a4a4a] rounded">
+            <ChevronLeft size={20} className="text-white" />
+          </button>
+
           <div className="flex items-center gap-2">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={handleSidebarToggle}
-              className="text-[#e0e0e0] hover:bg-[#505050]"
-            >
-              <Menu className="w-5 h-5" />
-            </Button>
-
-            <span className="text-sm text-[#a0a0a0] ml-2">권민성_포트폴리오.pdf</span>
+            <input
+              type="number"
+              value={pageInput}
+              onChange={handlePageInput}
+              onBlur={handlePageInputBlur}
+              className="w-12 px-2 py-1 bg-[#2a2a2a] text-white border border-[#555] rounded text-center"
+              min="1"
+              max={totalPages}
+            />
+            <span className="text-white text-sm">/ {totalPages}</span>
           </div>
 
-          {/* 중앙: 페이지 네비게이션 */}
+          <button onClick={nextPage} className="p-2 hover:bg-[#4a4a4a] rounded">
+            <ChevronRight size={20} className="text-white" />
+          </button>
+
+          <div className="flex-1" />
+
           <div className="flex items-center gap-2">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={goPreviousPage}
-              disabled={currentPage === 1}
-              className="text-[#e0e0e0] hover:bg-[#505050] disabled:opacity-50"
-            >
-              <ChevronLeft className="w-5 h-5" />
-            </Button>
-
-            <div className="flex items-center gap-1">
-              <input
-                type="number"
-                min="1"
-                max={totalPages}
-                value={pageInput}
-                onChange={handlePageInput}
-                className="w-12 text-center bg-[#2d2d2d] text-[#e0e0e0] border border-[#404040] rounded px-2 py-1 text-sm"
-              />
-              <span className="text-sm text-[#a0a0a0]">/ {totalPages}</span>
-            </div>
-
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={goToNextPage}
-              disabled={currentPage === totalPages}
-              className="text-[#e0e0e0] hover:bg-[#505050] disabled:opacity-50"
-            >
-              <ChevronRight className="w-5 h-5" />
-            </Button>
+            <span className="text-white text-sm">{zoom}%</span>
+            <button onClick={handleZoomOut} className="p-2 hover:bg-[#4a4a4a] rounded">
+              <ZoomOut size={20} className="text-white" />
+            </button>
+            <button onClick={handleZoomIn} className="p-2 hover:bg-[#4a4a4a] rounded">
+              <ZoomIn size={20} className="text-white" />
+            </button>
           </div>
 
-          {/* 오른쪽: 줌 및 컨트롤 */}
-          <div className="flex items-center gap-1">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={handleZoomOut}
-              className="text-[#e0e0e0] hover:bg-[#505050]"
-            >
-              <ZoomOut className="w-5 h-5" />
-            </Button>
+          <button onClick={handleRotate} className="p-2 hover:bg-[#4a4a4a] rounded">
+            <RotateCw size={20} className="text-white" />
+          </button>
 
-            <span className="text-sm text-[#a0a0a0] w-12 text-center">
-              {zoom}%
-            </span>
-
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={handleZoomIn}
-              className="text-[#e0e0e0] hover:bg-[#505050]"
-            >
-              <ZoomIn className="w-5 h-5" />
-            </Button>
-
-            <div className="w-px h-6 bg-[#404040] mx-1" />
-
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={handleRotate}
-              className="text-[#e0e0e0] hover:bg-[#505050]"
-            >
-              <RotateCw className="w-5 h-5" />
-            </Button>
-
-            <Button
-              variant="ghost"
-              size="sm"
-              className="text-[#e0e0e0] hover:bg-[#505050]"
-            >
-              <Download className="w-5 h-5" />
-            </Button>
-          </div>
+          <button onClick={handleDownload} className="p-2 hover:bg-[#4a4a4a] rounded">
+            <Download size={20} className="text-white" />
+          </button>
         </div>
 
-        {/* 렌더링 진행률 표시 */}
-        {isRendering && (
-          <div className="bg-[#2d2d2d] border-b border-[#404040] px-4 py-2">
-            <div className="flex items-center gap-2">
-              <Loader2 className="w-4 h-4 animate-spin text-[#4a9eff]" />
-              <span className="text-sm text-[#a0a0a0]">
-                페이지 렌더링 중... {renderProgress}%
-              </span>
-              <div className="flex-1 bg-[#404040] rounded-full h-1">
-                <div
-                  className="bg-[#4a9eff] h-1 rounded-full transition-all duration-300"
-                  style={{ width: `${renderProgress}%` }}
-                />
-              </div>
+        {/* 뷰어 영역 */}
+        <div className="flex-1 overflow-auto bg-[#1a1a1a] flex items-center justify-center p-4">
+          {isRendering && renderProgress < 100 && (
+            <div className="text-center">
+              <Loader2 className="animate-spin text-blue-500 mb-4 mx-auto" size={40} />
+              <p className="text-white">페이지 렌더링 중... {renderProgress}%</p>
             </div>
-          </div>
-        )}
+          )}
 
-        {/* 메인 뷰어 영역 */}
-        <div id="pdf-viewer" className="flex-1 overflow-auto bg-[#1a1a1a] flex items-center justify-center p-4">
-          <div 
-            ref={containerRef}
-            className="bg-white rounded shadow-2xl"
-            style={{
-              transform: `rotate(${rotation}deg)`,
-              transformOrigin: "center",
-              width: "auto",
-              height: "auto",
-            }}
-          >
-            {prerenderedPages[currentPage] ? (
+          {!isRendering && prerenderedPages[currentPage] && (
+            <div
+              ref={containerRef}
+              className="relative"
+              style={{
+                transform: `rotate(${rotation}deg)`,
+                transition: "transform 0.2s ease",
+              }}
+            >
               <img
                 src={prerenderedPages[currentPage]}
                 alt={`Page ${currentPage}`}
-                className="block"
+                className="rounded shadow-2xl"
                 style={{
+                  imageRendering: "crisp-edges",
                   maxWidth: "100%",
                   maxHeight: "100%",
-                  imageRendering: "crisp-edges",
                 }}
               />
-            ) : (
-              <div className="flex items-center justify-center p-8">
-                <Loader2 className="w-8 h-8 animate-spin text-[#4a9eff]" />
-              </div>
-            )}
-          </div>
+              {/* 링크 오버레이 */}
+              <div
+                ref={linkOverlayRef}
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  left: 0,
+                  width: "100%",
+                  height: "100%",
+                }}
+              />
+            </div>
+          )}
         </div>
       </div>
     </div>
   );
-}
-
-// Clarity 타입 정의
-declare global {
-  interface Window {
-    clarity?: (action: string, key: string, value: string) => void;
-  }
 }
