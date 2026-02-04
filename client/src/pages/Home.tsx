@@ -113,12 +113,23 @@ export default function Home() {
       const scale = (zoom / 100) * scaleToFit * dpiScale;
       const viewport = page.getViewport({ scale: scale });
 
+      // 캔버스 크기 검증 - 최소 크기 설정
+      const canvasWidth = Math.max(Math.ceil(viewport.width), 1);
+      const canvasHeight = Math.max(Math.ceil(viewport.height), 1);
+      
+      // 캔버스 최대 크기 제한 (브라우저 제한)
+      const MAX_CANVAS_SIZE = 32767;
+      if (canvasWidth > MAX_CANVAS_SIZE || canvasHeight > MAX_CANVAS_SIZE) {
+        console.warn(`캔버스 크기 초과 (페이지 ${pageNum}): ${canvasWidth}x${canvasHeight}`);
+        return null;
+      }
+
       const canvas = document.createElement("canvas");
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
+      canvas.width = canvasWidth;
+      canvas.height = canvasHeight;
       canvas.style.backgroundColor = "#f0f0f0";
       
-      const ctx = canvas.getContext("2d");
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
       if (!ctx) return null;
       
       const renderContext: any = {
