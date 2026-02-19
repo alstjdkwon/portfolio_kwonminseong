@@ -5,7 +5,7 @@ import * as pdfjsLib from "pdfjs-dist";
 import { useEffect, useState, useRef } from "react";
 
 // PDF.js worker 설정
-pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.js";
+pdfjsLib.GlobalWorkerOptions.workerSrc = `${import.meta.env.BASE_URL}pdf.worker.min.js`;
 
 export default function Home() {
   const [currentPage, setCurrentPage] = useState(1);
@@ -30,7 +30,7 @@ export default function Home() {
     const loadPDF = async () => {
       try {
         setIsRendering(true);
-        const pdf = await pdfjsLib.getDocument("/Portfolio.pdf").promise;
+        const pdf = await pdfjsLib.getDocument(`${import.meta.env.BASE_URL}Portfolio.pdf`).promise;
         setTotalPages(pdf.numPages);
         setPdfDocument(pdf);
 
