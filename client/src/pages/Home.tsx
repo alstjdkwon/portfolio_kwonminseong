@@ -10,7 +10,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.js";
 export default function Home() {
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(0);
-  const [zoom, setZoom] = useState(100);
+  const [zoom, setZoom] = useState(60);
   const [rotation, setRotation] = useState(0);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [prerenderedPages, setPrerenderedPages] = useState<{ [key: number]: string }>({});
@@ -30,19 +30,19 @@ export default function Home() {
     const loadPDF = async () => {
       try {
         setIsRendering(true);
-        const pdf = await pdfjsLib.getDocument("/portfolio.pdf").promise;
+        const pdf = await pdfjsLib.getDocument("/Portfolio.pdf").promise;
         setTotalPages(pdf.numPages);
         setPdfDocument(pdf);
-        
+
         // 썸네일 생성
         generateThumbnails(pdf);
-        
+
         // 모든 페이지의 어노테이션(링크) 추출
         await extractAllAnnotations(pdf);
-        
+
         // 모든 페이지 미리 렌더링 (병렬 처리)
         await preRenderAllPages(pdf);
-        
+
         setIsRendering(false);
       } catch (error) {
         console.error("PDF 로드 실패:", error);
@@ -56,7 +56,7 @@ export default function Home() {
   // 모든 페이지의 어노테이션 추출
   const extractAllAnnotations = async (pdf: pdfjsLib.PDFDocumentProxy) => {
     const annotations: { [key: number]: any[] } = {};
-    
+
     for (let i = 1; i <= pdf.numPages; i++) {
       try {
         const page = await pdf.getPage(i);
@@ -67,37 +67,37 @@ export default function Home() {
         annotations[i] = [];
       }
     }
-    
+
     setPageAnnotations(annotations);
   };
 
   // 썸네일 생성
   const generateThumbnails = async (pdf: pdfjsLib.PDFDocumentProxy) => {
     const thumbs: { [key: number]: string } = {};
-    
+
     for (let i = 1; i <= pdf.numPages; i++) {
       try {
         const page = await pdf.getPage(i);
         const viewport = page.getViewport({ scale: 0.15 });
-        
+
         const canvas = document.createElement("canvas");
         canvas.width = viewport.width;
         canvas.height = viewport.height;
-        
+
         const ctx = canvas.getContext("2d");
         if (!ctx) continue;
-        
+
         await page.render({
           canvasContext: ctx,
           viewport: viewport,
         } as any).promise;
-        
+
         thumbs[i] = canvas.toDataURL("image/png");
       } catch (error) {
         console.error(`썸네일 생성 실패 (페이지 ${i}):`, error);
       }
     }
-    
+
     setThumbnails(thumbs);
   };
 
@@ -105,13 +105,13 @@ export default function Home() {
   const renderPageToCanvas = async (pdf: pdfjsLib.PDFDocumentProxy, pageNum: number, canvas: HTMLCanvasElement) => {
     try {
       const page = await pdf.getPage(pageNum);
-      
+
       // 처음 렌더링을 위한 viewport 계산
       const initialViewport = page.getViewport({ scale: 1 });
       const maxWidth = window.innerWidth * 0.7;
       const maxHeight = window.innerHeight * 0.85;
       const scaleToFit = Math.min(maxWidth / initialViewport.width, maxHeight / initialViewport.height) * 0.95;
-      
+
       const dpiScale = 2;
       const scale = (zoom / 100) * scaleToFit * dpiScale;
       const viewport = page.getViewport({ scale: scale });
@@ -120,7 +120,7 @@ export default function Home() {
       const canvasWidth = Math.max(Math.ceil(viewport.width), 1);
       const canvasHeight = Math.max(Math.ceil(viewport.height), 1);
       const MAX_CANVAS_SIZE = 32767;
-      
+
       if (canvasWidth > MAX_CANVAS_SIZE || canvasHeight > MAX_CANVAS_SIZE) {
         console.warn(`Canvas 크기 초과 (페이지 ${pageNum}): ${canvasWidth}x${canvasHeight}`);
         return;
@@ -129,15 +129,15 @@ export default function Home() {
       canvas.width = canvasWidth;
       canvas.height = canvasHeight;
       canvas.style.backgroundColor = "#f0f0f0";
-      
+
       const ctx = canvas.getContext("2d", { willReadFrequently: true });
       if (!ctx) return;
-      
+
       const renderContext: any = {
         canvasContext: ctx,
         viewport: viewport,
       };
-      
+
       await page.render(renderContext).promise;
     } catch (error) {
       console.error(`Canvas 렌더링 실패 (페이지 ${pageNum}):`, error);
@@ -148,76 +148,94 @@ export default function Home() {
   useEffect(() => {
     if (!pdfDocument || !pageAnnotations[currentPage] || !linkOverlayRef.current) return;
 
-    try {
-      const overlay = linkOverlayRef.current;
-      overlay.innerHTML = "";
-      
-      const annotations = pageAnnotations[currentPage] || [];
-      if (annotations.length === 0) return;
+    const updateLinkOverlay = async () => {
+      try {
+        const overlay = linkOverlayRef.current;
+        if (!overlay) return;
+        overlay.innerHTML = "";
 
-      // Canvas 또는 img 요소로부터 렌더링 정보 가져오기
-      const renderElement = canvasRef.current || containerRef.current?.querySelector("img");
-      if (!renderElement) return;
+        const annotations = pageAnnotations[currentPage] || [];
+        if (annotations.length === 0) return;
 
-      const rect = renderElement.getBoundingClientRect();
-      const containerRect = containerRef.current?.getBoundingClientRect();
-      if (!containerRect) return;
+        const canvas = canvasRef.current;
+        if (!canvas) return;
 
-      annotations.forEach((annot: any) => {
-        if (!annot.rect) return;
-        
-        const [x1, y1, x2, y2] = annot.rect;
-        
-        let elementHeight = 1080;
-        let elementWidth = 1920;
-        
-        if (renderElement instanceof HTMLCanvasElement) {
-          elementHeight = renderElement.height;
-          elementWidth = renderElement.width;
-        } else if (renderElement instanceof HTMLImageElement) {
-          elementHeight = renderElement.naturalHeight || renderElement.height;
-          elementWidth = renderElement.naturalWidth || renderElement.width;
-        }
-        
-        const pdfHeight = elementHeight;
-        const top = pdfHeight - y2;
-        const bottom = pdfHeight - y1;
-        
-        const scaleX = rect.width / elementWidth;
-        const scaleY = rect.height / pdfHeight;
-        
-        const linkElement = document.createElement("a");
-        linkElement.href = annot.url || "#";
-        linkElement.target = "_blank";
-        linkElement.rel = "noopener noreferrer";
-        linkElement.style.cssText = `
-          position: absolute;
-          left: ${x1 * scaleX}px;
-          top: ${top * scaleY}px;
-          width: ${(x2 - x1) * scaleX}px;
-          height: ${(bottom - top) * scaleY}px;
-          cursor: pointer;
-          opacity: 0;
-          z-index: 10;
-        `;
-        
-        linkElement.addEventListener("click", (e) => {
-          if (window.clarity) {
-            window.clarity("set", "link_click", `page_${currentPage}_url_${annot.url}`);
+        // PDF 원본 페이지의 viewport (scale=1)에서 실제 PDF 좌표계 크기를 가져옴
+        const page = await pdfDocument.getPage(currentPage);
+        const pdfViewport = page.getViewport({ scale: 1 });
+        const pdfWidth = pdfViewport.width;
+        const pdfHeight = pdfViewport.height;
+
+        // Canvas의 화면 표시 크기 (CSS 픽셀)
+        const displayRect = canvas.getBoundingClientRect();
+        const scaleX = displayRect.width / pdfWidth;
+        const scaleY = displayRect.height / pdfHeight;
+
+        annotations.forEach((annot: any) => {
+          if (!annot.rect) return;
+
+          // PDF 좌표: 왼쪽 하단 원점, [x1, y1, x2, y2]
+          const [x1, y1, x2, y2] = annot.rect;
+
+          // PDF 좌표계(왼쪽 하단 원점) → CSS 좌표계(왼쪽 상단 원점) 변환
+          const cssLeft = x1 * scaleX;
+          const cssTop = (pdfHeight - y2) * scaleY;
+          const cssWidth = (x2 - x1) * scaleX;
+          const cssHeight = (y2 - y1) * scaleY;
+
+          const linkElement = document.createElement("a");
+
+          // 외부 URL 링크
+          if (annot.url) {
+            linkElement.href = annot.url;
+            linkElement.target = "_blank";
+            linkElement.rel = "noopener noreferrer";
           }
+
+          linkElement.style.cssText = `
+            position: absolute;
+            left: ${cssLeft}px;
+            top: ${cssTop}px;
+            width: ${cssWidth}px;
+            height: ${cssHeight}px;
+            cursor: pointer;
+            opacity: 0;
+            z-index: 10;
+          `;
+
+          linkElement.addEventListener("click", (e) => {
+            // 내부 페이지 이동 링크 처리
+            if (annot.dest && !annot.url) {
+              e.preventDefault();
+              pdfDocument.getDestination(annot.dest).then((dest: any) => {
+                if (dest) {
+                  pdfDocument.getPageIndex(dest[0]).then((pageIndex: number) => {
+                    const targetPage = pageIndex + 1;
+                    setCurrentPage(targetPage);
+                    setPageInput(String(targetPage));
+                  });
+                }
+              });
+            }
+            if (window.clarity) {
+              window.clarity("set", "link_click", `page_${currentPage}_url_${annot.url || annot.dest}`);
+            }
+          });
+
+          overlay.appendChild(linkElement);
         });
-        
-        overlay.appendChild(linkElement);
-      });
-    } catch (error) {
-      console.error("링크 오버레이 업데이트 실패:", error);
-    }
+      } catch (error) {
+        console.error("링크 오버레이 업데이트 실패:", error);
+      }
+    };
+
+    updateLinkOverlay();
   }, [currentPage, zoom, pageAnnotations, pdfDocument]);
 
   // Canvas로 현재 페이지 렌더링
   useEffect(() => {
     if (!pdfDocument || !canvasRef.current) return;
-    
+
     renderPageToCanvas(pdfDocument, currentPage, canvasRef.current);
   }, [currentPage, zoom, pdfDocument]);
 
@@ -225,12 +243,12 @@ export default function Home() {
   const renderPageToDataURL = async (pdf: pdfjsLib.PDFDocumentProxy, pageNum: number) => {
     try {
       const page = await pdf.getPage(pageNum);
-      
+
       const initialViewport = page.getViewport({ scale: 1 });
       const maxWidth = window.innerWidth * 0.7;
       const maxHeight = window.innerHeight * 0.85;
       const scaleToFit = Math.min(maxWidth / initialViewport.width, maxHeight / initialViewport.height) * 0.95;
-      
+
       const dpiScale = 2;
       const scale = (zoom / 100) * scaleToFit * dpiScale;
       const viewport = page.getViewport({ scale: scale });
@@ -239,15 +257,15 @@ export default function Home() {
       canvas.width = viewport.width;
       canvas.height = viewport.height;
       canvas.style.backgroundColor = "#f0f0f0";
-      
+
       const ctx = canvas.getContext("2d");
       if (!ctx) return null;
-      
+
       const renderContext: any = {
         canvasContext: ctx,
         viewport: viewport,
       };
-      
+
       await page.render(renderContext).promise;
       return canvas.toDataURL("image/png");
     } catch (error) {
@@ -260,27 +278,27 @@ export default function Home() {
   const preRenderAllPages = async (pdf: pdfjsLib.PDFDocumentProxy) => {
     const prerendered: { [key: number]: string } = {};
     const concurrency = 4; // 동시에 4개 페이지 렌더링
-    
+
     for (let i = 1; i <= pdf.numPages; i += concurrency) {
       // 4개씩 묶어서 병렬 렌더링
       const batch = [];
       for (let j = 0; j < concurrency && i + j <= pdf.numPages; j++) {
         batch.push(renderPageToDataURL(pdf, i + j));
       }
-      
+
       const results = await Promise.all(batch);
       results.forEach((dataUrl, idx) => {
         if (dataUrl) {
           prerendered[i + idx] = dataUrl;
         }
       });
-      
+
       // 진행률 업데이트
       const completed = Math.min(i + concurrency - 1, pdf.numPages);
       setRenderProgress(Math.round((completed / pdf.numPages) * 100));
       console.log(`페이지 ${i}~${completed} 렌더링 완료 (${Math.round((completed / pdf.numPages) * 100)}%)`);
     }
-    
+
     setPrerenderedPages(prerendered);
     setRenderProgress(100);
     console.log("모든 페이지 렌더링 완료");
@@ -290,7 +308,7 @@ export default function Home() {
   const handlePageInput = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
     setPageInput(value);
-    
+
     const pageNum = parseInt(value);
     if (pageNum >= 1 && pageNum <= totalPages) {
       setCurrentPage(pageNum);
@@ -404,9 +422,8 @@ export default function Home() {
     <div className="h-screen w-screen flex bg-[#1a1a1a] text-[#e0e0e0]">
       {/* 사이드바 */}
       <div
-        className={`transition-all duration-300 ease-in-out ${
-          sidebarOpen ? "w-48" : "w-0"
-        } bg-[#1a1a1a] border-r border-[#404040] overflow-hidden flex flex-col`}
+        className={`transition-all duration-300 ease-in-out ${sidebarOpen ? "w-48" : "w-0"
+          } bg-[#1a1a1a] border-r border-[#404040] overflow-hidden flex flex-col`}
       >
         <div className="flex-1 overflow-y-auto p-3 space-y-3">
           {Array.from({ length: totalPages }, (_, i) => i + 1).map((page) => (
@@ -415,10 +432,9 @@ export default function Home() {
               onClick={() => handleThumbnailClick(page)}
               className={`
                 cursor-pointer rounded transition-all duration-200 flex flex-col items-center gap-2
-                ${
-                  currentPage === page
-                    ? "ring-2 ring-[#4a9eff]"
-                    : "hover:opacity-80"
+                ${currentPage === page
+                  ? "ring-2 ring-[#4a9eff]"
+                  : "hover:opacity-80"
                 }
               `}
             >
@@ -561,7 +577,7 @@ export default function Home() {
 
         {/* 메인 뷰어 영역 */}
         <div id="pdf-viewer" className="flex-1 overflow-auto bg-[#1a1a1a] flex items-center justify-center p-4">
-          <div 
+          <div
             ref={containerRef}
             className="bg-white rounded shadow-2xl relative"
             style={{
