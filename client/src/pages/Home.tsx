@@ -272,9 +272,9 @@ export default function Home() {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.target === document.querySelector("input[type='number']")) return;
 
-      if (e.key === "ArrowRight") {
+      if (e.key === "ArrowRight" || e.key === "ArrowDown") {
         goToNextPage();
-      } else if (e.key === "ArrowLeft") {
+      } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
         goPreviousPage();
       }
     };
