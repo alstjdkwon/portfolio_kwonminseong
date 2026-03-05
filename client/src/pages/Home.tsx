@@ -106,7 +106,7 @@ export default function Home() {
       const maxHeight = window.innerHeight * 0.85;
       const scaleToFit = Math.min(maxWidth / initialViewport.width, maxHeight / initialViewport.height) * 0.95;
 
-      const dpiScale = 2;
+      const dpiScale = 3;
       const scale = (zoom / 100) * scaleToFit * dpiScale;
       const viewport = page.getViewport({ scale: scale });
 
@@ -124,7 +124,7 @@ export default function Home() {
       canvas.height = canvasHeight;
       canvas.style.backgroundColor = "#f0f0f0";
 
-      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      const ctx = canvas.getContext("2d", { alpha: false });
       if (!ctx) return;
 
       const renderContext: any = {
@@ -510,7 +510,7 @@ export default function Home() {
                   style={{
                     maxWidth: "100%",
                     maxHeight: "100%",
-                    imageRendering: "crisp-edges",
+                    imageRendering: "auto",
                   }}
                 />
                 {/* 링크 오버레이 */}
