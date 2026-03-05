@@ -13,10 +13,7 @@ export default function Home() {
   const [zoom, setZoom] = useState(60);
   const [rotation, setRotation] = useState(0);
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [prerenderedPages, setPrerenderedPages] = useState<{ [key: number]: string }>({});
   const [thumbnails, setThumbnails] = useState<{ [key: number]: string }>({});
-  const [isRendering, setIsRendering] = useState(false);
-  const [renderProgress, setRenderProgress] = useState(0);
   const [pageInput, setPageInput] = useState("1");
   const [pdfDocument, setPdfDocument] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
   const [pageAnnotations, setPageAnnotations] = useState<{ [key: number]: any[] }>({});
@@ -29,8 +26,11 @@ export default function Home() {
   useEffect(() => {
     const loadPDF = async () => {
       try {
-        setIsRendering(true);
-        const pdf = await pdfjsLib.getDocument(`${import.meta.env.BASE_URL}Portfolio.pdf`).promise;
+        const pdf = await pdfjsLib.getDocument({
+          url: `${import.meta.env.BASE_URL}Portfolio.pdf`,
+          disableAutoFetch: true,  // 전체 PDF 선다운로드 방지 — 필요한 페이지만 로드
+          disableStream: false,    // 스트리밍 활성화
+        }).promise;
         setTotalPages(pdf.numPages);
         setPdfDocument(pdf);
 
@@ -39,14 +39,8 @@ export default function Home() {
 
         // 모든 페이지의 어노테이션(링크) 추출
         await extractAllAnnotations(pdf);
-
-        // 모든 페이지 미리 렌더링 (병렬 처리)
-        await preRenderAllPages(pdf);
-
-        setIsRendering(false);
       } catch (error) {
         console.error("PDF 로드 실패:", error);
-        setIsRendering(false);
       }
     };
 
@@ -239,70 +233,7 @@ export default function Home() {
     renderPageToCanvas(pdfDocument, currentPage, canvasRef.current);
   }, [currentPage, zoom, pdfDocument]);
 
-  // 병렬 렌더링 헬퍼 함수 (DataURL로 변환을 위한 레거시)
-  const renderPageToDataURL = async (pdf: pdfjsLib.PDFDocumentProxy, pageNum: number) => {
-    try {
-      const page = await pdf.getPage(pageNum);
 
-      const initialViewport = page.getViewport({ scale: 1 });
-      const maxWidth = window.innerWidth * 0.7;
-      const maxHeight = window.innerHeight * 0.85;
-      const scaleToFit = Math.min(maxWidth / initialViewport.width, maxHeight / initialViewport.height) * 0.95;
-
-      const dpiScale = 2;
-      const scale = (zoom / 100) * scaleToFit * dpiScale;
-      const viewport = page.getViewport({ scale: scale });
-
-      const canvas = document.createElement("canvas");
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
-      canvas.style.backgroundColor = "#f0f0f0";
-
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return null;
-
-      const renderContext: any = {
-        canvasContext: ctx,
-        viewport: viewport,
-      };
-
-      await page.render(renderContext).promise;
-      return canvas.toDataURL("image/png");
-    } catch (error) {
-      console.error(`페이지 ${pageNum} 렌더링 실패:`, error);
-      return null;
-    }
-  };
-
-  // 모든 페이지 미리 렌더링 (병렬 처리)
-  const preRenderAllPages = async (pdf: pdfjsLib.PDFDocumentProxy) => {
-    const prerendered: { [key: number]: string } = {};
-    const concurrency = 4; // 동시에 4개 페이지 렌더링
-
-    for (let i = 1; i <= pdf.numPages; i += concurrency) {
-      // 4개씩 묶어서 병렬 렌더링
-      const batch = [];
-      for (let j = 0; j < concurrency && i + j <= pdf.numPages; j++) {
-        batch.push(renderPageToDataURL(pdf, i + j));
-      }
-
-      const results = await Promise.all(batch);
-      results.forEach((dataUrl, idx) => {
-        if (dataUrl) {
-          prerendered[i + idx] = dataUrl;
-        }
-      });
-
-      // 진행률 업데이트
-      const completed = Math.min(i + concurrency - 1, pdf.numPages);
-      setRenderProgress(Math.round((completed / pdf.numPages) * 100));
-      console.log(`페이지 ${i}~${completed} 렌더링 완료 (${Math.round((completed / pdf.numPages) * 100)}%)`);
-    }
-
-    setPrerenderedPages(prerendered);
-    setRenderProgress(100);
-    console.log("모든 페이지 렌더링 완료");
-  };
 
   // 페이지 입력 처리
   const handlePageInput = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -557,23 +488,7 @@ export default function Home() {
           </div>
         </div>
 
-        {/* 렌더링 진행률 표시 */}
-        {isRendering && (
-          <div className="bg-[#2d2d2d] border-b border-[#404040] px-4 py-2">
-            <div className="flex items-center gap-2">
-              <Loader2 className="w-4 h-4 animate-spin text-[#4a9eff]" />
-              <span className="text-sm text-[#a0a0a0]">
-                페이지 렌더링 중... {renderProgress}%
-              </span>
-              <div className="flex-1 bg-[#404040] rounded-full h-1">
-                <div
-                  className="bg-[#4a9eff] h-1 rounded-full transition-all duration-300"
-                  style={{ width: `${renderProgress}%` }}
-                />
-              </div>
-            </div>
-          </div>
-        )}
+
 
         {/* 메인 뷰어 영역 */}
         <div id="pdf-viewer" className="flex-1 overflow-auto bg-[#1a1a1a] flex items-center justify-center p-4">
